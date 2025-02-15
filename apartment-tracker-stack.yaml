@@ -1,0 +1,192 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'DynamoDB table and Lambda function for tracking apartment listings'
+
+Parameters:
+  EnvironmentName:
+    Description: Environment name (e.g., dev, prod)
+    Type: String
+    Default: dev
+    AllowedValues:
+      - dev
+      - prod
+  
+  TableReadCapacity:
+    Description: Read capacity units for the table
+    Type: Number
+    Default: 1
+    MinValue: 1
+  
+  TableWriteCapacity:
+    Description: Write capacity units for the table
+    Type: Number
+    Default: 1
+    MinValue: 1
+
+  SenderEmail:
+    Description: Verified SES email address for sending notifications
+    Type: String
+
+  RecipientEmail:
+    Description: Email address to receive notifications
+    Type: String
+
+  LambdaCodeBucket:
+    Type: String
+    Description: S3 bucket containing Lambda deployment package
+
+  LambdaCodeKey:
+    Type: String
+    Description: S3 key for Lambda deployment package
+
+  Layer1PackageKey:
+    Type: String
+    Description: S3 key for Lambda Layer package 1
+
+  Layer2PackageKey:
+    Type: String
+    Description: S3 key for Lambda Layer package 2
+
+  UpdateTimestamp:
+    Type: String
+    Description: Timestamp to force update
+
+Resources:
+  ApartmentListingsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub 'ApartmentListings-${EnvironmentName}'
+      BillingMode: PROVISIONED
+      ProvisionedThroughput:
+        ReadCapacityUnits: !Ref TableReadCapacity
+        WriteCapacityUnits: !Ref TableWriteCapacity
+      AttributeDefinitions:
+        - AttributeName: apartment_id
+          AttributeType: S
+      KeySchema:
+        - AttributeName: apartment_id
+          KeyType: HASH
+      Tags:
+        - Key: Environment
+          Value: !Ref EnvironmentName
+        - Key: Project
+          Value: ApartmentTracker
+
+  DependencyLayer1:
+    Type: AWS::Lambda::LayerVersion
+    Properties:
+      LayerName: !Sub 'apartment-tracker-deps-1-${EnvironmentName}'
+      Description: Core dependencies for apartment tracker
+      Content:
+        S3Bucket: !Ref LambdaCodeBucket
+        S3Key: layer-package-1.zip
+      CompatibleRuntimes:
+        - python3.13
+
+  DependencyLayer2:
+    Type: AWS::Lambda::LayerVersion
+    Properties:
+      LayerName: !Sub 'apartment-tracker-deps-2-${EnvironmentName}'
+      Description: Additional dependencies for apartment tracker
+      Content:
+        S3Bucket: !Ref LambdaCodeBucket
+        S3Key: layer-package-2.zip
+      CompatibleRuntimes:
+        - python3.13
+
+  LambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: DynamoDBAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:PutItem
+                  - dynamodb:GetItem
+                  - dynamodb:UpdateItem
+                  - dynamodb:DeleteItem
+                  - dynamodb:Scan
+                  - dynamodb:Query
+                Resource: !GetAtt ApartmentListingsTable.Arn
+        - PolicyName: SESAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - ses:SendRawEmail
+                  - ses:SendEmail
+                Resource: '*'
+
+  LambdaFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub 'apartment-tracker-${EnvironmentName}'
+      Handler: main.lambda_handler
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Code:
+        S3Bucket: !Ref LambdaCodeBucket
+        S3Key: !Ref LambdaCodeKey
+      Runtime: python3.13
+      Timeout: 300
+      MemorySize: 512
+      Layers:
+        - !Ref DependencyLayer1
+        - !Ref DependencyLayer2
+      Environment:
+        Variables:
+          ENVIRONMENT: !Ref EnvironmentName
+          DYNAMODB_TABLE: !Ref ApartmentListingsTable
+          SENDER_EMAIL: !Ref SenderEmail
+          RECIPIENT_EMAIL: !Ref RecipientEmail
+      Tags:
+        - Key: UpdateTimestamp
+          Value: !Ref UpdateTimestamp  # Add this tag
+
+  LambdaScheduleRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Description: "Schedule for running apartment tracker at 9:05 AM EST daily"
+      ScheduleExpression: "cron(5 14 * * ? *)"  # 14:05 UTC = 9:05 AM EST
+      State: ENABLED
+      Targets:
+        - Arn: !GetAtt LambdaFunction.Arn
+          Id: "ApartmentTrackerSchedule"
+
+  LambdaSchedulePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref LambdaFunction
+      Action: "lambda:InvokeFunction"
+      Principal: "events.amazonaws.com"
+      SourceArn: !GetAtt LambdaScheduleRule.Arn
+
+Outputs:
+  TableName:
+    Description: Name of the created DynamoDB table
+    Value: !Ref ApartmentListingsTable
+    Export:
+      Name: !Sub '${AWS::StackName}-TableName'
+  
+  TableArn:
+    Description: ARN of the created DynamoDB table
+    Value: !GetAtt ApartmentListingsTable.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-TableArn'
+  
+  LambdaFunctionArn:
+    Description: ARN of the Lambda function
+    Value: !GetAtt LambdaFunction.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-LambdaArn'
