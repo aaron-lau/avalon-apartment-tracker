@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Build the image
-docker build -t apartment-tracker .
+docker buildx build --platform linux/amd64 --provenance=false -t ${ECR_REPO_NAME}:${IMAGE_TAG} . --output type=docker
 
 # Run the container with environment variables from .env
 docker run -p 9000:8080 \
@@ -10,7 +10,7 @@ docker run -p 9000:8080 \
 
 # Wait for container to start
 echo "Waiting for container to start..."
-sleep 5
+sleep 7
 
 # Test the function
 echo "Testing function..."

@@ -124,10 +124,10 @@ def print_current_listings(communities):
                 
                 # Format promotion info
                 price = listing['price']
-                price_display = f"${listing['price']:,.2f}"
+                price_display = f"${price:,.2f}"
                 if listing['has_promotion']:
                     price_display += f" (was ${listing['original_price']:,.2f})"
-
+                
                 # Calculate price per square foot
                 try:
                     sqft = float(listing['sqft'])
@@ -135,34 +135,88 @@ def print_current_listings(communities):
                     price_per_sqft_display = f"${price_per_sqft:.2f}"
                 except (ValueError, TypeError):
                     price_per_sqft_display = "N/A"
-                    price_per_sqft = 0
+                    price_per_sqft = float('inf')
                 
                 all_listings.append({
                     'Location': location_name,
                     'Apartment': listing['apartment_name'],
                     'Floor': listing['floor'],
-                    'Type': f"{listing['beds']}BD/{listing['baths']}BA",
                     'Price': price_display,
                     'Square Footage': listing['sqft'],
                     'Price/SqFt': price_per_sqft_display,
                     'Move-in Date': listing['move_in_date'],
+                    '_sort_price_per_sqft': price_per_sqft  # Hidden column for sorting
                 })
         except Exception as e:
             print(f"Error fetching listings for {location_name}: {e}")
     
-    # Convert to DataFrame and sort by price
+    # Convert to DataFrame and sort by price per sqft
     df = pd.DataFrame(all_listings)
     if not df.empty:
-        df['Sort Price'] = df['Price'].apply(lambda x: float(x.split(' ')[0].replace('$', '').replace(',', '')))
-        df = df.sort_values('Sort Price').drop('Sort Price', axis=1)
-    
-        # Print the formatted table
-        print("\nCurrent Available Apartments:")
-        print("=" * 150)
-        print(df.to_string(index=False))
-        print("=" * 150)
+        df = df.sort_values('_sort_price_per_sqft').drop('_sort_price_per_sqft', axis=1)
+        
+        # Group by location and print
+        for location in df['Location'].unique():
+            location_df = df[df['Location'] == location]
+            print(f"\n{location} Apartments Available:")
+            print("=" * 150)
+            print(location_df.to_string(index=False))
+            print("=" * 150)
+            print(f"Total {location} apartments available: {len(location_df)}")
+        
+        print(f"\nTotal apartments available across all locations: {len(df)}")
     else:
         print("\nNo apartments found.")
+        
+def format_email_body(new_listings, price_changes):
+    def sort_and_group_listings(listings):
+        # Calculate price per sqft and sort
+        for listing in listings:
+            try:
+                price = float(listing['price'].replace('$', '').replace(',', ''))
+                sqft = float(listing['sqft'])
+                listing['price_per_sqft'] = price / sqft
+            except (ValueError, TypeError):
+                listing['price_per_sqft'] = float('inf')
+
+        # Group by location
+        grouped = {}
+        for listing in sorted(listings, key=lambda x: x['price_per_sqft']):
+            location = listing['location']
+            if location not in grouped:
+                grouped[location] = []
+            grouped[location].append(listing)
+        
+        return grouped
+
+    email_body = "<h2>Apartment Updates</h2>"
+    
+    if new_listings:
+        email_body += "<h3>New Listings:</h3>"
+        grouped_new = sort_and_group_listings(new_listings)
+        
+        for location, listings in grouped_new.items():
+            email_body += f"<h4>{location}</h4><ul>"
+            for listing in listings:
+                price_per_sqft = f"${listing['price_per_sqft']:.2f}/sqft" if listing['price_per_sqft'] != float('inf') else 'N/A'
+                email_body += f"<li>Apt {listing['name']} - {listing['price']} - {listing['sqft']} sqft ({price_per_sqft}) - Move-in: {listing['move_in_date']}</li>"
+            email_body += "</ul>"
+    
+    if price_changes:
+        email_body += "<h3>Price Changes:</h3>"
+        grouped_changes = sort_and_group_listings(price_changes)
+        
+        for location, changes in grouped_changes.items():
+            email_body += f"<h4>{location}</h4><ul>"
+            for change in changes:
+                price_per_sqft = f"${change['price_per_sqft']:.2f}/sqft" if change['price_per_sqft'] != float('inf') else 'N/A'
+                email_body += (
+                    f"<li>Apt {change['name']} - Changed from {change['old_price']} to {change['new_price']} - "
+                    f"{change['sqft']} sqft ({price_per_sqft}) - Move-in: {change['move_in_date']}</li>"
+                )
+            email_body += "</ul>"
+    
+    return email_body
 
 def main():
     # Define communities and their codes
@@ -246,20 +300,7 @@ def main():
     
     # Send email if there are updates
     if new_listings or price_changes:
-        email_body = "<h2>Apartment Updates</h2>"
-        
-        if new_listings:
-            email_body += "<h3>New Listings:</h3><ul>"
-            for listing in new_listings:
-                email_body += f"<li>{listing['location']} - {listing['name']} - {listing['price']} - {listing['sqft']} sqft - Move-in: {listing['move_in_date']}</li>"
-            email_body += "</ul>"
-        
-        if price_changes:
-            email_body += "<h3>Price Changes:</h3><ul>"
-            for change in price_changes:
-                email_body += f"<li>{change['location']} - {change['name']} - Price changed from {change['old_price']} to {change['new_price']} - {change['sqft']} sqft - Move-in: {change['move_in_date']}</li>"
-            email_body += "</ul>"
-        
+        email_body = format_email_body(new_listings, price_changes)
         send_email("Apartment Listing Updates", email_body)
     else:
         print(f"No new listings today.")
