@@ -1,94 +1,71 @@
 #!/bin/bash
 export AWS_ACCESS_KEY_ID='your_access_key'
 export AWS_SECRET_ACCESS_KEY='your_secret_key'
-export AWS_DEFAULT_REGION='us-east-1'
+export AWS_REGION="us-east-1"
+export AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
 
 export STACK_NAME="apartment-tracker-stack"
-export BUCKET_NAME="your-bucket-name"
 export ENVIRONMENT="dev"
 export SENDER_EMAIL="your-verified@email.com"
 export RECIPIENT_EMAIL="your@email.com"
+export TIMESTAMP=$(date +%Y%m%d-%H%M%S)
 
-# Create function package
-mkdir -p function-package
-cp main.py function-package/
-cd function-package
-zip -r ../function-package.zip .
-cd ..
+export ECR_REPO_NAME="apartment-tracker"
+export IMAGE_TAG="latest"
 
-# Create Layer 1: Core dependencies
-mkdir -p layer1-package/python
-cd layer1-package/python
-pip3 install \
-    --platform manylinux2014_x86_64 \
-    --implementation cp \
-    --python-version 3.13 \
-    --only-binary=:all: \
-    --target . \
-    boto3 requests urllib3
+# Build Docker image
+docker buildx build --platform linux/amd64 --provenance=false -t ${ECR_REPO_NAME}:${IMAGE_TAG} . --output type=docker
 
-# Clean up unnecessary files
-find . -type d -name "tests" -exec rm -rf {} +
-find . -type d -name "__pycache__" -exec rm -rf {} +
-cd ..
-zip -r ../layer-package-1.zip python/
-cd ..
+# Get ECR login token
+aws ecr get-login-password --region ${AWS_REGION} | \
+docker login --username AWS --password-stdin ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com
 
-# Create Layer 2: Data processing dependencies
-mkdir -p layer2-package/python
-cd layer2-package/python
+# Tag image for ECR
+docker tag ${ECR_REPO_NAME}:${IMAGE_TAG} ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${ECR_REPO_NAME}:${IMAGE_TAG}
 
-# Install numpy first
-pip3 install \
-    --platform manylinux2014_x86_64 \
-    --implementation cp \
-    --python-version 3.13 \
-    --only-binary=:all: \
-    --target . \
-    numpy
+# Push image to ECR
+docker push ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${ECR_REPO_NAME}:${IMAGE_TAG}
 
-# Then install pandas and pyarrow
-pip3 install \
-    --platform manylinux2014_x86_64 \
-    --implementation cp \
-    --python-version 3.13 \
-    --only-binary=:all: \
-    --target . \
-    pandas pyarrow
+# Get image URI
+IMAGE_URI="${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${ECR_REPO_NAME}:${IMAGE_TAG}"
 
-# Clean up unnecessary files
-find . -type d -name "tests" -exec rm -rf {} +
-find . -type d -name "__pycache__" -exec rm -rf {} +
-find . -type f -name "*.so" ! -name "_numpy_core.so" -delete
-find . -type d -name "numpy/core/tests" -exec rm -rf {} +
-find . -type d -name "numpy/testing" -exec rm -rf {} +
-find . -type d -name "numpy/doc" -exec rm -rf {} +
-cd ..
-zip -r ../layer-package-2.zip python/
-cd ..
+# Update or create CloudFormation stack
+if aws cloudformation describe-stacks --stack-name ${STACK_NAME} 2>/dev/null; then
+    echo "Updating existing stack..."
+    aws cloudformation update-stack \
+      --stack-name ${STACK_NAME} \
+      --template-body file://${STACK_NAME}.yaml \
+      --parameters \
+        ParameterKey=EnvironmentName,ParameterValue=${ENVIRONMENT} \
+        ParameterKey=SenderEmail,ParameterValue=${SENDER_EMAIL} \
+        ParameterKey=RecipientEmail,ParameterValue=${RECIPIENT_EMAIL} \
+        ParameterKey=ImageUri,ParameterValue=${IMAGE_URI} \
+        ParameterKey=TableReadCapacity,ParameterValue=1 \
+        ParameterKey=TableWriteCapacity,ParameterValue=1 \
+        ParameterKey=ECRRepositoryName,ParameterValue=${ECR_REPO_NAME} \
+        ParameterKey=UpdateTimestamp,ParameterValue=${TIMESTAMP} \
+      --capabilities CAPABILITY_IAM
 
-# Upload to S3
-aws s3 cp function-package.zip "s3://${BUCKET_NAME}/"
-aws s3 cp layer-package-1.zip "s3://${BUCKET_NAME}/"
-aws s3 cp layer-package-2.zip "s3://${BUCKET_NAME}/"
+    # Wait for stack update to complete
+    aws cloudformation wait stack-update-complete --stack-name ${STACK_NAME}
+else
+    echo "Creating new stack..."
+    aws cloudformation create-stack \
+      --stack-name ${STACK_NAME} \
+      --template-body file://${STACK_NAME}.yaml \
+      --parameters \
+        ParameterKey=EnvironmentName,ParameterValue=${ENVIRONMENT} \
+        ParameterKey=SenderEmail,ParameterValue=${SENDER_EMAIL} \
+        ParameterKey=RecipientEmail,ParameterValue=${RECIPIENT_EMAIL} \
+        ParameterKey=ImageUri,ParameterValue=${IMAGE_URI} \
+        ParameterKey=TableReadCapacity,ParameterValue=1 \
+        ParameterKey=TableWriteCapacity,ParameterValue=1 \
+        ParameterKey=ECRRepositoryName,ParameterValue=${ECR_REPO_NAME} \
+        ParameterKey=UpdateTimestamp,ParameterValue=${TIMESTAMP} \
+      --capabilities CAPABILITY_IAM
 
+    # Wait for stack creation to complete
+    aws cloudformation wait stack-create-complete --stack-name ${STACK_NAME}
+fi
 
-# Update CloudFormation stack
-aws cloudformation update-stack \
-  --stack-name ${STACK_NAME} \
-  --template-body file://apartment-tracker-stack.yaml \
-  --parameters \
-    ParameterKey=EnvironmentName,ParameterValue=${ENVIRONMENT} \
-    ParameterKey=SenderEmail,ParameterValue=${SENDER_EMAIL} \
-    ParameterKey=RecipientEmail,ParameterValue=${RECIPIENT_EMAIL} \
-    ParameterKey=LambdaCodeBucket,ParameterValue=${BUCKET_NAME} \
-    ParameterKey=LambdaCodeKey,ParameterValue=function-package.zip \
-    ParameterKey=Layer1PackageKey,ParameterValue=layer-package-1.zip \
-    ParameterKey=Layer2PackageKey,ParameterValue=layer-package-2.zip \
-    ParameterKey=TableReadCapacity,ParameterValue=1 \
-    ParameterKey=TableWriteCapacity,ParameterValue=1 \
-    ParameterKey=UpdateTimestamp,ParameterValue=${TIMESTAMP} \
-  --capabilities CAPABILITY_IAM
-
-# Clean up
-rm -rf function-package layer1-package layer2-package *.zip
+echo "Deployment completed"

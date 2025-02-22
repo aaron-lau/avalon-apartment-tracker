@@ -1,6 +1,7 @@
 # Apartment Tracker
 
-A serverless application that tracks apartment listings from Avalon Communities, specifically monitoring Avalon Willoughby Square and AVA DoBro in Brooklyn. The application checks for new listings and price changes daily, sending email notifications when changes are detected.
+A containerized serverless application that tracks apartment listings from Avalon Communities, specifically monitoring Avalon Willoughby Square and AVA DoBro in Brooklyn. The application checks for new listings and price changes daily, sending email notifications when changes are detected.
+
 
 ## Features
 
@@ -11,14 +12,16 @@ A serverless application that tracks apartment listings from Avalon Communities,
 - Sends email notifications via AWS SES
 - Runs daily at 9:05 AM EST
 - Calculates price per square foot for comparison
+- Containerized deployment for consistent environments
 
 ## Prerequisites
 
 - AWS Account
-- Python 3.13
+- Docker installed
 - AWS CLI configured
-- S3 bucket for deployment packages
+- S3 bucket for deployment
 - Verified email addresses in AWS SES
+- ECR repository (created automatically by CloudFormation)
 
 ## Installation
 
@@ -28,16 +31,24 @@ git clone https://github.com/aaron-lau/avalon-apartment-tracker.git
 cd apartment-tracker
 ```
 
-2. Install dependencies:
-```bash
-pip install -r requirements.txt
+2. Create .env file for local testing:
+```
+cp .env.example .env
+
+# Edit .env with your values:
+# AWS_ACCESS_KEY_ID=your_access_key
+# AWS_SECRET_ACCESS_KEY=your_secret_key
+# AWS_REGION=us-east-1
+# AWS_DEFAULT_REGION=us-east-1
+# SENDER_EMAIL=your_sender@email.com
+# RECIPIENT_EMAIL=your_recipient@email.com
 ```
 
 3. Configure AWS credentials:
 ```bash
 export AWS_ACCESS_KEY_ID='your_access_key'
 export AWS_SECRET_ACCESS_KEY='your_secret_key'
-export AWS_DEFAULT_REGION='us-east-1'
+export AWS_REGION='us-east-1'
 ```
 
 4. Update deployment variables:
@@ -49,120 +60,120 @@ export SENDER_EMAIL="your-verified@email.com"
 export RECIPIENT_EMAIL="your@email.com"
 ```
 
-## Deployment
+## Local Development
+1. Build and run the container locally:
+```
+./test_local.sh
+```
 
-Run the deployment script:
-```bash
+2. Test the function:
+```
+curl -XPOST "http://localhost:9000/2015-03-31/functions/function/invocations" -d '{"list-only": true}'
+```
+
+3. View logs:
+```
+docker logs $(docker ps -q --filter ancestor=apartment-tracker)
+```
+
+## Deployment
+1. Update deployment variables:
+```
+export STACK_NAME="apartment-tracker-stack"
+export ENVIRONMENT="dev"
+export SENDER_EMAIL="your-verified@email.com"
+export RECIPIENT_EMAIL="your@email.com"
+```
+
+2. Deploy the application:
+```
 ./deploy.sh
 ```
 
 This will:
-1. Create deployment packages
-2. Upload packages to S3
-3. Deploy/update the CloudFormation stack
-4. Configure Lambda layers and function
+- Build the Docker image
+- Push to ECR
+- Deploy/update the CloudFormation stack
+- Configure the Lambda function
 
 ## Infrastructure
-
 The application uses several AWS services:
-- Lambda: Runs the apartment tracking code
+
+- Lambda: Runs the containerized application
+- ECR: Stores the Docker image
 - DynamoDB: Stores apartment listing history
 - CloudWatch Events: Schedules daily execution
 - SES: Sends email notifications
-- S3: Stores deployment packages
 - IAM: Manages permissions
-
-## Configuration
-
-### CloudFormation Parameters
-
-- `EnvironmentName`: Deployment environment (dev/prod)
-- `TableReadCapacity`: DynamoDB read capacity units
-- `TableWriteCapacity`: DynamoDB write capacity units
-- `SenderEmail`: Verified SES sender email
-- `RecipientEmail`: Notification recipient email
-- `LambdaCodeBucket`: S3 bucket for deployment
-- `LambdaCodeKey`: S3 key for function code
-- `Layer1PackageKey`: S3 key for core dependencies
-- `Layer2PackageKey`: S3 key for data processing dependencies
-
-### Lambda Environment Variables
-
-- `ENVIRONMENT`: Deployment environment
-- `DYNAMODB_TABLE`: DynamoDB table name
-- `SENDER_EMAIL`: Email sender address
-- `RECIPIENT_EMAIL`: Email recipient address
-
-## Usage
-
-### Local Testing
-
-Test the script locally:
-```bash
-python main.py --list-only
-```
-
-### Deployment Updates
-
-Update the Lambda function:
-```bash
-./deploy.sh
-```
-
-### Manual Execution
-
-Invoke the Lambda function manually:
-```bash
-aws lambda invoke \
-  --function-name apartment-tracker-dev \
-  --payload '{}' \
-  response.json
-```
 
 ## File Structure
 
 ```
 apartment-tracker/
 ├── main.py              # Main application code
-├── template.yaml        # CloudFormation template
-├── deploy.sh           # Deployment script
-├── requirements.txt    # Python dependencies
-└── README.md          # Documentation
+├── Dockerfile          # Container configuration
+├── template.yaml       # CloudFormation template
+├── deploy.sh          # Deployment script
+├── test_local.sh      # Local testing script
+├── requirements.txt   # Python dependencies
+├── .env.example       # Example environment variables
+├── .gitignore        # Git ignore rules
+└── README.md         # Documentation
 ```
 
-## Dependencies
+## Configuration
+### Environment Variables
+Local testing (.env):
 
-Core dependencies:
-- boto3
-- requests
-- urllib3
+- `AWS_ACCESS_KEY_ID`: AWS access key
+- `AWS_SECRET_ACCESS_KEY`: AWS secret key
+- `AWS_REGION`: AWS region
+- `SENDER_EMAIL`: Verified SES sender email
+- `RECIPIENT_EMAIL`: Notification recipient email
 
-Data processing dependencies:
-- pandas
-- pyarrow
-- numpy
+### CloudFormation Parameters
+- `EnvironmentName`: Deployment environment (dev/prod)
+- `TableReadCapacity`: DynamoDB read capacity
+- `TableWriteCapacity`: DynamoDB write capacity
+- `SenderEmail`: Verified SES sender email
+- `RecipientEmail`: Notification recipient email
+- `ECRRepositoryName`: Name for the ECR repository
+- `ImageUri`: URI of the container image
 
 ## Monitoring
-
-- CloudWatch Logs: `/aws/lambda/apartment-tracker-dev`
+- CloudWatch Logs: /aws/lambda/apartment-tracker-dev
 - DynamoDB: Check the ApartmentListings table
-- CloudWatch Metrics: Lambda execution metrics
+- CloudWatch Metrics: Lambda and container metrics
+- ECR: Container image scanning results
 
 ## Troubleshooting
+####
+Container Issues:
+```
+# Check container logs
+docker logs $(docker ps -q --filter ancestor=apartment-tracker)
 
-Common issues and solutions:
+# Inspect image
+docker inspect apartment-tracker:latest
 
-1. Size limit exceeded:
-   - Dependencies are split into two Lambda layers
-   - Unnecessary files are removed during packaging
+# Test container locally
+docker run --env-file .env apartment-tracker
+```
 
-2. Import errors:
-   - Check Lambda layer configuration
-   - Verify package installation order
+Deployment Issues:
+```
+# Check CloudFormation events
+aws cloudformation describe-stack-events --stack-name apartment-tracker-stack
 
-3. Permission issues:
-   - Verify IAM role permissions
-   - Check SES email verification status
+# Check Lambda logs
+aws logs tail /aws/lambda/apartment-tracker-dev
+```
+
+## Security
+- Container scanning enabled in ECR
+- IAM roles with minimal permissions
+- Environment variables for sensitive data
+- No credentials in container images
 
 ## Contributing
 
@@ -172,26 +183,12 @@ Common issues and solutions:
 4. Push to the branch
 5. Create a Pull Request
 
-## Acknowledgments
-
-- Avalon Communities API
-- AWS Documentation
-
 ## Future Improvements
 
 - Add support for more properties
 - Implement price trend analysis
+- Add web interface for viewing listings
+- Include floor plan images
 - Add more filtering options
-
-## Security
-
-- AWS credentials are managed via IAM
-- Sensitive data stored in environment variables
-- Email sending restricted to verified addresses
-- DynamoDB access limited to necessary operations
-
-## Backup and Recovery
-
-- DynamoDB table can be backed up using AWS Backup
-- Code and configuration stored in version control
-- Deployment packages preserved in S3
+- Implement container vulnerability scanning
+- Add automated testing
