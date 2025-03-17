@@ -113,6 +113,7 @@ Resources:
   LambdaFunction:
     Type: AWS::Lambda::Function
     Properties:
+      Description: "Apartment tracker running daily at 9:05 AM Eastern Time (adjusts for DST)"
       FunctionName: !Sub 'apartment-tracker-${EnvironmentName}'
       Role: !GetAtt LambdaExecutionRole.Arn
       PackageType: Image
@@ -126,27 +127,46 @@ Resources:
           DYNAMODB_TABLE: !Ref ApartmentListingsTable
           SENDER_EMAIL: !Ref SenderEmail
           RECIPIENT_EMAIL: !Ref RecipientEmail
+          MIN_SQFT: '650'
       Tags:
         - Key: UpdateTimestamp
           Value: !Ref UpdateTimestamp
 
-  LambdaScheduleRule:
+  LambdaScheduleRuleEST:
     Type: AWS::Events::Rule
     Properties:
-      Description: "Schedule for running apartment tracker at 9:05 AM EST daily"
-      ScheduleExpression: "cron(5 14 * * ? *)"  # 14:05 UTC = 9:05 AM EST
+      Description: "Schedule for running apartment tracker at 9:05 AM Eastern Standard Time (Nov-Mar)"
+      ScheduleExpression: "cron(5 14 * 11-12,1-3 ? *)"  # 14:05 UTC = 9:05 AM EST
       State: ENABLED
       Targets:
         - Arn: !GetAtt LambdaFunction.Arn
-          Id: "ApartmentTrackerSchedule"
+          Id: "ApartmentTrackerScheduleEST"
 
-  LambdaSchedulePermission:
+  LambdaScheduleRuleEDT:
+    Type: AWS::Events::Rule
+    Properties:
+      Description: "Schedule for running apartment tracker at 9:05 AM Eastern Daylight Time (Mar-Nov)"
+      ScheduleExpression: "cron(5 13 * 3-11 ? *)"  # 13:05 UTC = 9:05 AM EDT
+      State: ENABLED
+      Targets:
+        - Arn: !GetAtt LambdaFunction.Arn
+          Id: "ApartmentTrackerScheduleEDT"
+
+  LambdaSchedulePermissionEST:
     Type: AWS::Lambda::Permission
     Properties:
       FunctionName: !Ref LambdaFunction
       Action: "lambda:InvokeFunction"
       Principal: "events.amazonaws.com"
-      SourceArn: !GetAtt LambdaScheduleRule.Arn
+      SourceArn: !GetAtt LambdaScheduleRuleEST.Arn
+
+  LambdaSchedulePermissionEDT:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref LambdaFunction
+      Action: "lambda:InvokeFunction"
+      Principal: "events.amazonaws.com"
+      SourceArn: !GetAtt LambdaScheduleRuleEDT.Arn
 
 Outputs:
   TableName:

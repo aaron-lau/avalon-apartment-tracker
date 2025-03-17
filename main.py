@@ -45,7 +45,7 @@ def send_email(subject, body):
         print(f"Email sent! Message ID: {response['MessageId']}")
 
 
-def get_listings(community_code, location_name):
+def get_listings(community_code, location_name, min_sqft=650):
     api_url = f"https://api.avalonbay.com/json/reply/ApartmentSearch?communityCode={community_code}"
     
     response = requests.get(api_url)
@@ -67,6 +67,10 @@ def get_listings(community_code, location_name):
         for floor_plan in floor_plan_type.get('availableFloorPlans', []):
             for finish_package in floor_plan.get('finishPackages', []):
                 for apartment in finish_package.get('apartments', []):
+                    # Skip if apartment is smaller than minimum square footage
+                    if apartment.get('apartmentSize', 0) < min_sqft:
+                        continue
+
                     apt_number = apartment.get('apartmentNumber')
                     unique_id = f"{location_name}-{apt_number}"
                     
@@ -106,20 +110,17 @@ def get_listings(community_code, location_name):
                         'baths': baths,
                         'has_promotion': has_promotion,
                         'promotion_amount': promotion_amount,
-                        'finish_package': finish_package.get('finishPackageName'),
-                        'floor_plan_type': floor_plan_type.get('display'),
-                        'floor_plan_name': floor_plan.get('floorPlanName'),
                         'last_updated': datetime.now().isoformat()
                     }
     
     return listings
 
-def print_current_listings(communities):
+def print_current_listings(communities, min_sqft=650):
     all_listings = []
     
     for location_name, community_code in communities.items():
         try:
-            location_listings = get_listings(community_code, location_name)
+            location_listings = get_listings(community_code, location_name, min_sqft)
             for _, listing in location_listings.items():
                 
                 # Format promotion info
@@ -145,7 +146,7 @@ def print_current_listings(communities):
                     'Square Footage': listing['sqft'],
                     'Price/SqFt': price_per_sqft_display,
                     'Move-in Date': listing['move_in_date'],
-                    '_sort_price_per_sqft': price_per_sqft  # Hidden column for sorting
+                    '_sort_price_per_sqft': price_per_sqft
                 })
         except Exception as e:
             print(f"Error fetching listings for {location_name}: {e}")
@@ -158,7 +159,7 @@ def print_current_listings(communities):
         # Group by location and print
         for location in df['Location'].unique():
             location_df = df[df['Location'] == location]
-            print(f"\n{location} Apartments Available:")
+            print(f"\n{location} Apartments Available (>= {min_sqft} sqft):")
             print("=" * 150)
             print(location_df.to_string(index=False))
             print("=" * 150)
@@ -166,14 +167,17 @@ def print_current_listings(communities):
         
         print(f"\nTotal apartments available across all locations: {len(df)}")
     else:
-        print("\nNo apartments found.")
+        print(f"\nNo apartments found >= {min_sqft} sqft.")
         
 def format_email_body(new_listings, price_changes):
     def sort_and_group_listings(listings):
         # Calculate price per sqft and sort
         for listing in listings:
             try:
-                price = float(listing['price'].replace('$', '').replace(',', ''))
+                if 'price' in listing:
+                    price = float(listing['price'].replace('$', '').replace(',', ''))
+                else:
+                    price = float(listing['new_price'].replace('$', '').replace(',', ''))
                 sqft = float(listing['sqft'])
                 listing['price_per_sqft'] = price / sqft
             except (ValueError, TypeError):
@@ -210,8 +214,18 @@ def format_email_body(new_listings, price_changes):
             email_body += f"<h4>{location}</h4><ul>"
             for change in changes:
                 price_per_sqft = f"${change['price_per_sqft']:.2f}/sqft" if change['price_per_sqft'] != float('inf') else 'N/A'
+                
+                # Determine if price increased or decreased
+                old_price = float(change['old_price'].replace('$', '').replace(',', ''))
+                new_price = float(change['new_price'].replace('$', '').replace(',', ''))
+                
+                if new_price > old_price:
+                    price_change_text = f"Price Increased to {change['new_price']} from {change['old_price']}"
+                else:
+                    price_change_text = f"Price Decreased to {change['new_price']} from {change['old_price']}"
+                
                 email_body += (
-                    f"<li>Apt {change['name']} - Changed from {change['old_price']} to {change['new_price']} - "
+                    f"<li>Apt {change['name']} - {price_change_text} - "
                     f"{change['sqft']} sqft ({price_per_sqft}) - Move-in: {change['move_in_date']}</li>"
                 )
             email_body += "</ul>"
@@ -222,23 +236,27 @@ def main():
     # Define communities and their codes
     communities = {
         'Willoughby': 'NY039',
-        'Dobro': 'NY037'
+        'Dobro': 'NY037',
+        'Fort Greene': 'NY026'
     }
 
     parser = argparse.ArgumentParser(description='Apartment Listing Tracker')
     parser.add_argument('--list-only', action='store_true', 
                       help='Only print current listings without updating DynamoDB')
+    parser.add_argument('--min-sqft', type=int, default=650,
+                      help='Minimum square footage (default: 650)')
     args = parser.parse_args()
 
     if args.list_only:
-        print_current_listings(communities)
+        print(f"\nFiltering for apartments >= {args.min_sqft} sqft")
+        print_current_listings(communities, args.min_sqft)
         return
 
     # Get current listings
     current_listings = {}
     for location_name, community_code in communities.items():
         try:
-            location_listings = get_listings(community_code, location_name)
+            location_listings = get_listings(community_code, location_name, args.min_sqft)
             current_listings.update(location_listings)
         except Exception as e:
             print(f"Error fetching listings for {location_name}: {e}")
@@ -307,13 +325,17 @@ def main():
 
         
 def lambda_handler(event, context):
+    # Get minimum square footage from environment variable
+    min_sqft = int(os.environ.get('MIN_SQFT', 650))
+    
     try:
-        main()
+        main(['--min-sqft', str(min_sqft)])
         return {
             'statusCode': 200,
             'body': 'Successfully processed apartment listings'
         }
     except Exception as e:
+        print(f"Error: {str(e)}")
         return {
             'statusCode': 500,
             'body': f'Error processing apartment listings: {str(e)}'
