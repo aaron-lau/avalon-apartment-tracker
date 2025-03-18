@@ -16,10 +16,10 @@ A containerized serverless application that tracks apartment listings from Avalo
 
 ## Prerequisites
 
+- Python 3.13
 - AWS Account
 - Docker installed
 - AWS CLI configured
-- S3 bucket for deployment
 - Verified email addresses in AWS SES
 - ECR repository (created automatically by CloudFormation)
 
@@ -42,6 +42,7 @@ cp .env.example .env
 # AWS_DEFAULT_REGION=us-east-1
 # SENDER_EMAIL=your_sender@email.com
 # RECIPIENT_EMAIL=your_recipient@email.com
+# MIN_SQFT=650
 ```
 
 3. Configure AWS credentials:
@@ -54,7 +55,6 @@ export AWS_REGION='us-east-1'
 4. Update deployment variables:
 ```bash
 export STACK_NAME="apartment-tracker-stack"
-export BUCKET_NAME="your-bucket-name"
 export ENVIRONMENT="dev"
 export SENDER_EMAIL="your-verified@email.com"
 export RECIPIENT_EMAIL="your@email.com"
@@ -68,7 +68,12 @@ export RECIPIENT_EMAIL="your@email.com"
 
 2. Test the function:
 ```
+# Default (≥ 650 sqft)
 curl -XPOST "http://localhost:9000/2015-03-31/functions/function/invocations" -d '{"list-only": true}'
+
+
+# Custom minimum (e.g., ≥ 700 sqft)
+curl -XPOST "http://localhost:9000/2015-03-31/functions/function/invocations" -d '{"list-only": true, "min-sqft": 700}'
 ```
 
 3. View logs:

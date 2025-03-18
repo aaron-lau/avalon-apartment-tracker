@@ -232,7 +232,7 @@ def format_email_body(new_listings, price_changes):
     
     return email_body
 
-def main():
+def main(args=None):
     # Define communities and their codes
     communities = {
         'Willoughby': 'NY039',
@@ -245,7 +245,12 @@ def main():
                       help='Only print current listings without updating DynamoDB')
     parser.add_argument('--min-sqft', type=int, default=650,
                       help='Minimum square footage (default: 650)')
-    args = parser.parse_args()
+    
+    # Parse arguments
+    if args is None:
+        args = parser.parse_args()
+    else:
+        args = parser.parse_args(args)
 
     if args.list_only:
         print(f"\nFiltering for apartments >= {args.min_sqft} sqft")
@@ -329,7 +334,16 @@ def lambda_handler(event, context):
     min_sqft = int(os.environ.get('MIN_SQFT', 650))
     
     try:
-        main(['--min-sqft', str(min_sqft)])
+        # Get minimum square footage from environment or event
+        min_sqft = event.get('min-sqft', os.environ.get('MIN_SQFT', '650'))
+        
+        # Convert arguments to format expected by argparse
+        args = []
+        if event.get('list-only'):
+            args.append('--list-only')
+        args.extend(['--min-sqft', str(min_sqft)])
+
+        main(args)
         return {
             'statusCode': 200,
             'body': 'Successfully processed apartment listings'

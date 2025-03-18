@@ -1,16 +1,24 @@
 #!/bin/bash
 
-# Build the image
-docker buildx build --platform linux/amd64 --provenance=false -t ${ECR_REPO_NAME}:${IMAGE_TAG} . --output type=docker
+# Stop any existing containers
+docker stop $(docker ps -q --filter ancestor=apartment-tracker) 2>/dev/null || true
 
-# Run the container with environment variables from .env
+# Remove existing image
+docker rmi apartment-tracker 2>/dev/null || true
+
+# Build the image
+echo "Building container..."
+docker build --no-cache -t apartment-tracker .
+
+# Run the container
+echo "Starting container..."
 docker run -p 9000:8080 \
   --env-file .env \
   apartment-tracker &
 
 # Wait for container to start
 echo "Waiting for container to start..."
-sleep 7
+sleep 5
 
 # Test the function
 echo "Testing function..."
