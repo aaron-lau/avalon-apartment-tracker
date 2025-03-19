@@ -2,6 +2,7 @@ import requests
 import pandas as pd
 import os
 import boto3
+import time
 from datetime import datetime
 from botocore.exceptions import ClientError
 from email.mime.text import MIMEText
@@ -169,7 +170,7 @@ def print_current_listings(communities, min_sqft=650):
     else:
         print(f"\nNo apartments found >= {min_sqft} sqft.")
         
-def format_email_body(new_listings, price_changes):
+def format_email_body(new_listings, price_changes, removed_listings):
     def sort_and_group_listings(listings):
         # Calculate price per sqft and sort
         for listing in listings:
@@ -227,6 +228,20 @@ def format_email_body(new_listings, price_changes):
                 email_body += (
                     f"<li>Apt {change['name']} - {price_change_text} - "
                     f"{change['sqft']} sqft ({price_per_sqft}) - Move-in: {change['move_in_date']}</li>"
+                )
+            email_body += "</ul>"
+
+    if removed_listings:
+        email_body += "<h3>Removed Listings:</h3>"
+        grouped_removed = sort_and_group_listings(removed_listings)
+        
+        for location, listings in grouped_removed.items():
+            email_body += f"<h4>{location}</h4><ul>"
+            for listing in listings:
+                price_per_sqft = f"${listing['price_per_sqft']:.2f}/sqft" if listing['price_per_sqft'] != float('inf') else 'N/A'
+                email_body += (
+                    f"<li>Apt {listing['apartment_name']} - Last listed at {listing['price']} - "
+                    f"{listing['sqft']} sqft ({price_per_sqft}) - Last move-in date: {listing['move_in_date']}</li>"
                 )
             email_body += "</ul>"
     
@@ -290,19 +305,10 @@ def main(args=None):
     # Compare and prepare notifications
     new_listings = []
     price_changes = []
+    removed_listings = []
     
+    # Check for new listings and price changes
     for apt_id, current_data in current_listings.items():
-        # Update DynamoDB
-        table.put_item(Item={
-            'apartment_id': apt_id,
-            'location': current_data['location'],
-            'apartment_name': current_data['apartment_name'],
-            'price': str(current_data['price']),
-            'sqft': current_data['sqft'],
-            'move_in_date': current_data['move_in_date'],
-            'last_updated': current_data['last_updated']
-        })
-        
         if apt_id not in previous_listings:
             new_listings.append({
                 'location': current_data['location'],
@@ -320,6 +326,32 @@ def main(args=None):
                 'sqft': current_data['sqft'],
                 'move_in_date': current_data['move_in_date']
             })
+    # Check for removed listings
+    for apt_id, prev_data in previous_listings.items():
+        if apt_id not in current_listings:
+            removed_listings.append({
+                'location': prev_data['location'],
+                'apartment_name': prev_data['apartment_name'],
+                'price': f"${prev_data['price']:,.2f}",
+                'sqft': prev_data['sqft'],
+                'move_in_date': prev_data['move_in_date']
+            })
+    
+    # Add 90 days TTL
+    ttl = int(time.time()) + (90 * 24 * 60 * 60)
+
+    # Update DynamoDB with current listings
+    for apt_id, current_data in current_listings.items():
+        table.put_item(Item={
+            'apartment_id': apt_id,
+            'location': current_data['location'],
+            'apartment_name': current_data['apartment_name'],
+            'price': str(current_data['price']),
+            'sqft': current_data['sqft'],
+            'move_in_date': current_data['move_in_date'],
+            'last_updated': current_data['last_updated'],
+            'ttl': ttl
+        })
     
     # Send email if there are updates
     if new_listings or price_changes:
@@ -327,6 +359,11 @@ def main(args=None):
         send_email("Apartment Listing Updates", email_body)
     else:
         print(f"No new listings today.")
+
+    # Remove old listings from DynamoDB
+    for apt_id in previous_listings:
+        if apt_id not in current_listings:
+            table.delete_item(Key={'apartment_id': apt_id})
 
         
 def lambda_handler(event, context):

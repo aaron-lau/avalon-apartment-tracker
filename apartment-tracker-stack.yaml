@@ -58,6 +58,9 @@ Resources:
       KeySchema:
         - AttributeName: apartment_id
           KeyType: HASH
+      TimeToLiveSpecification:
+        AttributeName: ttl
+        Enabled: true
       Tags:
         - Key: Environment
           Value: !Ref EnvironmentName
