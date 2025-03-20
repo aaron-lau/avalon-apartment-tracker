@@ -355,7 +355,7 @@ def main(args=None):
     
     # Send email if there are updates
     if new_listings or price_changes:
-        email_body = format_email_body(new_listings, price_changes)
+        email_body = format_email_body(new_listings, price_changes, removed_listings)
         send_email("Apartment Listing Updates", email_body)
     else:
         print(f"No new listings today.")
